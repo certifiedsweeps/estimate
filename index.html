@@ -1284,7 +1284,7 @@ async function renderPDF(pdf) {
   const currentR    = _lastCurrentR;
   const rLabels     = { 0:'None / R-0', 11:'R-11 or less', 19:'R-19', 30:'R-30', 38:'R-38', 39:'R-39 (code min)', 49:'R-49' };
   const dateStr     = new Date().toLocaleDateString('en-US', { month:'long', day:'numeric', year:'numeric' });
-  const homeName    = _lastName  ? _lastName + ''s Home' : 'Your Home';
+  const homeName    = _lastName ? _lastName + '\'s Home' : 'Your Home';
   const rLabel      = rLabels[currentR] || 'R-' + currentR;
 
   // ── helper drawing functions ──────────────────────────────
