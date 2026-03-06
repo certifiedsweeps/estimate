@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Polar Bear Insulation — Attic Estimate</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,700;1,600;1,700&family=Plus+Jakarta+Sans:wght@300;400;500;700&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
 :root {
@@ -1220,7 +1219,8 @@ function generateEstimate() {
   setTimeout(() => output.scrollIntoView({ behavior:'smooth', block:'start' }), 100);
 }
 
-// ── PDF DOWNLOAD ──────────────────────────────────────────────
+
+// ── PDF DOWNLOAD — NATIVE jsPDF ──────────────────────────────
 
 async function downloadPDF() {
   const overlay  = document.getElementById('pdf-overlay');
@@ -1233,57 +1233,20 @@ async function downloadPDF() {
 
   try {
     const { jsPDF } = window.jspdf;
-    const captureEl = buildPDFCapture();
-    document.body.appendChild(captureEl);
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'letter' });
 
-    await new Promise(r => setTimeout(r, 500));
-
-    const canvas = await html2canvas(captureEl, {
-      scale: 2,
-      useCORS: true,
-      backgroundColor: '#ffffff',
-      width: 900,
-      windowWidth: 900,
-      logging: false,
-    });
-
-    document.body.removeChild(captureEl);
-
-    const pdf     = new jsPDF({ orientation:'portrait', unit:'pt', format:'letter' });
-    const pageW   = pdf.internal.pageSize.getWidth();
-    const pageH   = pdf.internal.pageSize.getHeight();
-    const margin  = 36;
-    const usableW = pageW - margin * 2;
-    const imgH    = (canvas.height / canvas.width) * usableW;
-
-    let remaining = imgH;
-    let firstPage = true;
-
-    while (remaining > 0) {
-      const sliceH  = Math.min(remaining, pageH - margin * 2);
-      const srcY    = ((imgH - remaining) / imgH) * canvas.height;
-      const srcH    = (sliceH / imgH) * canvas.height;
-
-      const slice   = document.createElement('canvas');
-      slice.width   = canvas.width;
-      slice.height  = srcH;
-      slice.getContext('2d').drawImage(canvas, 0, srcY, canvas.width, srcH, 0, 0, canvas.width, srcH);
-
-      if (!firstPage) pdf.addPage();
-      pdf.addImage(slice.toDataURL('image/jpeg', 0.95), 'JPEG', margin, margin, usableW, sliceH);
-
-      remaining -= sliceH;
-      firstPage = false;
-    }
+    await renderPDF(pdf);
 
     const safeName    = (_lastName || 'Estimate').replace(/\s+/g, '_');
-    const safeAddress = _lastAddress ? '_' + _lastAddress.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '') : '';
-    const dateStr     = new Date().toISOString().slice(0, 10);
+    const safeAddress = _lastAddress
+      ? '_' + _lastAddress.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '')
+      : '';
+    const dateStr = new Date().toISOString().slice(0, 10);
     pdf.save(`PolarBear_${safeName}${safeAddress}_${dateStr}.pdf`);
 
   } catch (err) {
     console.error('PDF error:', err);
-    alert('PDF generation failed. Please try your browser\'s Print → Save as PDF option.');
+    alert('PDF generation failed — please try again.');
   } finally {
     overlay.style.display = 'none';
     btn.disabled = false;
@@ -1291,116 +1254,530 @@ async function downloadPDF() {
   }
 }
 
-// ── CLEAN PDF CAPTURE TEMPLATE ────────────────────────────────
+// ── NATIVE jsPDF RENDERER ────────────────────────────────────
+// All coordinates in points. Letter = 612 × 792 pt.
 
-function buildPDFCapture() {
-  const utilRebate = _lastUtilRebate;
-  const sqft       = _lastSqft;
-  const opts       = _lastOpts;
-  const rLabels    = { 0:'None / R-0', 11:'R-11 or less', 19:'R-19', 30:'R-30', 38:'R-38', 39:'R-39 (code min)', 49:'R-49' };
-  const dateStr    = new Date().toLocaleDateString('en-US', { month:'long', day:'numeric', year:'numeric' });
-  const homeName   = _lastName ? _lastName + '\'s Home' : 'Your Home';
-  const rLabel     = rLabels[_lastCurrentR] || 'R-' + _lastCurrentR;
+async function renderPDF(pdf) {
+  const PW = 612, PH = 792;
+  const ML = 36, MR = 36, MT = 0, MB = 36; // margins (top handled by header)
+  const CW = PW - ML - MR;                  // content width = 540
 
-  const optCards = opts.map(opt => {
+  // ── colours ────────────────────────────────────────────────
+  const C = {
+    navy:      [26,  10,  20],
+    pink:      [240, 64,  122],
+    pinkLight: [253, 232, 239],
+    pinkMid:   [192, 24,  90],
+    blush:     [255, 240, 245],
+    blushBdr:  [249, 192, 212],
+    white:     [255, 255, 255],
+    rule:      [240, 216, 228],
+    textDark:  [26,  10,  20],
+    textMid:   [107, 64,  88],
+    textMuted: [176, 136, 152],
+    savingsGrn:[192, 24,  90],
+  };
+
+  const opts        = _lastOpts;
+  const sqft        = _lastSqft;
+  const utilRebate  = _lastUtilRebate;
+  const currentR    = _lastCurrentR;
+  const rLabels     = { 0:'None / R-0', 11:'R-11 or less', 19:'R-19', 30:'R-30', 38:'R-38', 39:'R-39 (code min)', 49:'R-49' };
+  const dateStr     = new Date().toLocaleDateString('en-US', { month:'long', day:'numeric', year:'numeric' });
+  const homeName    = _lastName  ? _lastName + ''s Home' : 'Your Home';
+  const rLabel      = rLabels[currentR] || 'R-' + currentR;
+
+  // ── helper drawing functions ──────────────────────────────
+
+  function setFill(rgb)   { pdf.setFillColor(rgb[0], rgb[1], rgb[2]); }
+  function setDraw(rgb)   { pdf.setDrawColor(rgb[0], rgb[1], rgb[2]); }
+  function setTxt(rgb)    { pdf.setTextColor(rgb[0], rgb[1], rgb[2]); }
+
+  function rect(x, y, w, h, fill, draw, lw) {
+    if (fill) setFill(fill);
+    if (draw) { setDraw(draw); pdf.setLineWidth(lw || 0.5); }
+    if (fill && draw) pdf.rect(x, y, w, h, 'FD');
+    else if (fill)    pdf.rect(x, y, w, h, 'F');
+    else if (draw)    pdf.rect(x, y, w, h, 'D');
+  }
+
+  function hline(x, y, w, color, lw) {
+    setDraw(color || C.rule);
+    pdf.setLineWidth(lw || 0.5);
+    pdf.line(x, y, x + w, y);
+  }
+
+  function text(str, x, y, opts2) {
+    pdf.text(String(str), x, y, opts2 || {});
+  }
+
+  function label(str, x, y, size, color, style, align) {
+    pdf.setFontSize(size || 9);
+    pdf.setFont('helvetica', style || 'normal');
+    setTxt(color || C.textDark);
+    text(str, x, y, align ? { align } : {});
+  }
+
+  // Wrap text and return lines array
+  function wrapText(str, maxWidth) {
+    return pdf.splitTextToSize(str, maxWidth);
+  }
+
+  // Adds a new page and returns fresh y cursor
+  function newPage() {
+    pdf.addPage();
+    // subtle pink top rule on continuation pages
+    setFill(C.pink);
+    pdf.rect(0, 0, PW, 3, 'F');
+    return MT + 24;
+  }
+
+  // Check if we need a page break; if so add page and reset y
+  function checkPage(y, neededHeight) {
+    if (y + neededHeight > PH - MB) {
+      return newPage();
+    }
+    return y;
+  }
+
+  // ── SECTION LABEL ──────────────────────────────────────────
+  function sectionLabel(txt, x, y) {
+    hline(x, y, CW, C.rule, 0.5);
+    label(txt.toUpperCase(), x, y - 5, 7.5, C.textMuted, 'bold');
+    return y + 10;
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // PAGE 1 — HEADER
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  // Dark header background
+  const headerH = _lastAddress ? 148 : 130;
+  setFill(C.navy);
+  pdf.rect(0, 0, PW, headerH, 'F');
+
+  // Pink square logo placeholder
+  setFill(C.pink);
+  pdf.rect(ML, 22, 28, 28, 'F');
+  // Bear emoji approximation — white "PB" text in box
+  pdf.setFontSize(8);
+  pdf.setFont('helvetica', 'bold');
+  setTxt(C.white);
+  text('🐻', ML + 5, 37);
+
+  // Company name
+  pdf.setFontSize(14);
+  pdf.setFont('helvetica', 'bold');
+  setTxt(C.white);
+  text('Polar Bear Insulation', ML + 36, 34);
+  pdf.setFontSize(7);
+  pdf.setFont('helvetica', 'normal');
+  setTxt([150, 120, 130]);
+  text('NEBRASKA  ·  CLIMATE ZONE 5', ML + 36, 44);
+
+  // "Prepared for" label
+  pdf.setFontSize(7);
+  pdf.setFont('helvetica', 'normal');
+  setTxt([150, 120, 130]);
+  text('ESTIMATE PREPARED FOR', ML, 70);
+
+  // Customer / home name
+  pdf.setFontSize(18);
+  pdf.setFont('helvetica', 'bold');
+  setTxt(C.white);
+  text(homeName, ML, 88);
+
+  let headerY = 100;
+
+  // Address
+  if (_lastAddress) {
+    pdf.setFontSize(9.5);
+    pdf.setFont('helvetica', 'normal');
+    setTxt([210, 170, 190]);
+    text('📍 ' + _lastAddress, ML, headerY);
+    headerY += 13;
+  }
+
+  // Phone + email
+  pdf.setFontSize(8.5);
+  setTxt([185, 150, 165]);
+  if (_lastPhone) { text(_lastPhone, ML, headerY); headerY += 12; }
+  if (_lastEmail) { text(_lastEmail, ML, headerY); }
+
+  // Right-side meta block
+  const metaX = PW - MR;
+  const metaItems = [
+    ['Date',         dateStr],
+    ['Attic Area',   sqft.toLocaleString() + ' sq ft'],
+    ['Current R',    rLabel],
+    ['Climate Zone', '5 · Nebraska'],
+  ];
+  metaItems.forEach((item, i) => {
+    const my = 60 + i * 17;
+    pdf.setFontSize(7.5);
+    pdf.setFont('helvetica', 'normal');
+    setTxt([150, 120, 130]);
+    text(item[0], metaX - 120, my, { align: 'left' });
+    pdf.setFont('helvetica', 'bold');
+    setTxt(C.white);
+    text(item[1], metaX, my, { align: 'right' });
+  });
+
+  // Pink accent bar under header
+  setFill(C.pink);
+  pdf.rect(0, headerH, PW, 3, 'F');
+  // Lighter blush continuation
+  setFill([255, 210, 225]);
+  pdf.rect(0, headerH + 3, PW, 1.5, 'F');
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // OPTION CARDS
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  let y = headerH + 22;
+
+  y = sectionLabel('Your Upgrade Options', ML, y);
+  y += 6;
+
+  // Cards layout: 2 per row
+  const cardW  = (CW - 12) / 2;
+  const colGap = 12;
+
+  for (let i = 0; i < opts.length; i += 2) {
+    const rowOpts = opts.slice(i, i + 2);
+
+    // Measure tallest card in this row to keep row height consistent
+    // Each card: header ~52pt + body rows
+    const cardBodyRows = 7; // savings, hvac, rebate, credit, net, payback + pitch
+    const estCardH = 52 + cardBodyRows * 18 + 40; // rough estimate
+
+    y = checkPage(y, estCardH + 12);
+
+    rowOpts.forEach((opt, col) => {
+      const cx = ML + col * (cardW + colGap);
+      const after = Math.max(0, opt.price - utilRebate - 1200);
+      const pb    = payback(opt.price, opt.savings.low, opt.savings.high);
+
+      // ── Card border ──────────────────────────────────────
+      const bdrColor = opt.recommended ? C.pink : C.rule;
+      rect(cx, y, cardW, estCardH, null, bdrColor, opt.recommended ? 1.5 : 0.75);
+
+      // ── Recommended banner ───────────────────────────────
+      let cardY = y;
+      if (opt.recommended) {
+        setFill(C.pink);
+        pdf.rect(cx, cardY, cardW, 14, 'F');
+        pdf.setFontSize(6.5);
+        pdf.setFont('helvetica', 'bold');
+        setTxt(C.white);
+        text('★  RECOMMENDED FOR YOUR HOME', cx + cardW / 2, cardY + 9.5, { align: 'center' });
+        cardY += 14;
+      }
+
+      // ── Dark card header ─────────────────────────────────
+      const cHdrH = 50;
+      setFill(opt.recommended ? [100, 0, 40] : C.navy);
+      pdf.rect(cx, cardY, cardW, cHdrH, 'F');
+
+      // Tier label
+      pdf.setFontSize(6.5);
+      pdf.setFont('helvetica', 'bold');
+      setTxt(opt.recommended ? [255, 160, 180] : [180, 130, 160]);
+      text(opt.tier.toUpperCase(), cx + 10, cardY + 12);
+
+      // Option name
+      pdf.setFontSize(11);
+      pdf.setFont('helvetica', 'bold');
+      setTxt(C.white);
+      const nameLines = wrapText(opt.name, cardW - 20);
+      nameLines.forEach((line, li) => text(line, cx + 10, cardY + 26 + li * 13));
+
+      // Description
+      pdf.setFontSize(7);
+      pdf.setFont('helvetica', 'normal');
+      setTxt([160, 120, 140]);
+      const descLines = wrapText(opt.desc, cardW - 20);
+      text(descLines[0] || opt.desc, cx + 10, cardY + cHdrH - 8);
+
+      cardY += cHdrH;
+
+      // ── Card body ────────────────────────────────────────
+      setFill(C.white);
+      pdf.rect(cx, cardY, cardW, estCardH - cHdrH - (opt.recommended ? 14 : 0), 'F');
+
+      // Price
+      pdf.setFontSize(18);
+      pdf.setFont('helvetica', 'bold');
+      setTxt(C.textDark);
+      text(fmt(opt.price), cx + 10, cardY + 20);
+
+      if (opt.isMin) {
+        setFill(C.blush);
+        pdf.rect(cx + 10 + pdf.getTextWidth(fmt(opt.price)) + 4, cardY + 10, 50, 10, 'F');
+        pdf.setFontSize(6.5);
+        pdf.setFont('helvetica', 'bold');
+        setTxt(C.pinkMid);
+        text('MIN. JOB', cx + 10 + pdf.getTextWidth(fmt(opt.price)) + 8, cardY + 18);
+      }
+
+      // Per-sqft line
+      pdf.setFontSize(7);
+      pdf.setFont('helvetica', 'normal');
+      setTxt(C.textMuted);
+      text(`${RATES[opt.rateKey].psf.toFixed(2)}/sqft × ${sqft.toLocaleString()} sqft`, cx + 10, cardY + 31);
+
+      // Divider
+      hline(cx + 8, cardY + 37, cardW - 16, C.rule);
+
+      // Data rows
+      const dataRows = [
+        ['Est. Annual Savings',   `${fmt(opt.savings.low)} – ${fmt(opt.savings.high)}/yr`, C.pinkMid, true],
+        ['HVAC Cost Reduction',   opt.savings.pct,                                          C.textDark, false],
+        ['Utility Rebate',        `−${fmt(utilRebate)}`,                                    C.pinkMid, false],
+        ['Federal Tax Credit',    '−$1,200',                                                 C.pinkMid, false],
+        ['Net After Incentives',  after <= 0 ? 'Fully Offset' : fmt(after),                 after <= 0 ? C.pinkMid : C.textDark, true],
+        ['Simple Payback',        pb,                                                         C.textDark, false],
+      ];
+
+      let rowY = cardY + 50;
+      dataRows.forEach(([lbl, val, valColor, bold]) => {
+        // row bg for bold rows
+        if (bold) {
+          setFill([252, 248, 250]);
+          pdf.rect(cx + 1, rowY - 9, cardW - 2, 15, 'F');
+        }
+        pdf.setFontSize(7.5);
+        pdf.setFont('helvetica', bold ? 'bold' : 'normal');
+        setTxt(bold ? C.textDark : C.textMid);
+        text(lbl, cx + 10, rowY);
+        pdf.setFont('helvetica', 'bold');
+        setTxt(valColor);
+        text(val, cx + cardW - 10, rowY, { align: 'right' });
+        hline(cx + 8, rowY + 4, cardW - 16, C.rule, 0.3);
+        rowY += 15;
+      });
+
+      // Pitch text
+      const pitchTxt = opt.pitch.replace(/<[^>]+>/g, ''); // strip HTML tags
+      const pitchLines = wrapText(pitchTxt, cardW - 22);
+      setFill(opt.recommended ? [255, 240, 245] : [250, 248, 252]);
+      const pitchBlockH = pitchLines.length * 9 + 12;
+      pdf.rect(cx + 8, rowY + 2, cardW - 16, pitchBlockH, 'F');
+      // Pink left accent bar
+      setFill(opt.recommended ? C.pink : [210, 180, 200]);
+      pdf.rect(cx + 8, rowY + 2, 2.5, pitchBlockH, 'F');
+      pdf.setFontSize(6.8);
+      pdf.setFont('helvetica', 'italic');
+      setTxt(C.textMid);
+      pitchLines.forEach((line, li) => {
+        text(line, cx + 15, rowY + 10 + li * 9);
+      });
+    });
+
+    y += estCardH + 14;
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // COMPARISON TABLE
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  const tableH = 18 + opts.length * 26 + 10;
+  y = checkPage(y + 10, tableH + 60);
+
+  y = sectionLabel('Side-by-Side Comparison', ML, y);
+  y += 6;
+
+  // Table header
+  setFill(C.navy);
+  pdf.rect(ML, y, CW, 18, 'F');
+
+  const tCols = [
+    { label: 'OPTION',          x: ML + 8,       w: 160, align: 'left'  },
+    { label: 'EST. COST',       x: ML + 175,     w: 70,  align: 'right' },
+    { label: 'ANNUAL SAVINGS',  x: ML + 260,     w: 100, align: 'right' },
+    { label: 'AFTER INCENTIVES',x: ML + 375,     w: 95,  align: 'right' },
+    { label: 'PAYBACK',         x: ML + CW - 8,  w: 60,  align: 'right' },
+  ];
+
+  pdf.setFontSize(6.5);
+  pdf.setFont('helvetica', 'bold');
+  setTxt(C.white);
+  tCols.forEach(col => text(col.label, col.x, y + 12, { align: col.align }));
+  y += 18;
+
+  opts.forEach((opt, ri) => {
     const after = Math.max(0, opt.price - utilRebate - 1200);
     const pb    = payback(opt.price, opt.savings.low, opt.savings.high);
-    return `
-      <div style="border:2px solid ${opt.recommended ? '#f0407a' : '#f0d8e4'};border-radius:10px;overflow:hidden;">
-        ${opt.recommended ? '<div style="background:#f0407a;color:#fff;text-align:center;font-size:10px;font-weight:700;letter-spacing:2px;padding:5px;text-transform:uppercase">★ Recommended</div>' : ''}
-        <div style="background:#1a0a14;padding:14px 18px;color:#fff;">
-          <div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#ff80aa;margin-bottom:3px">${opt.tier}</div>
-          <div style="font-size:16px;font-weight:700">${opt.name}</div>
-          <div style="font-size:10px;color:rgba(255,255,255,0.45);margin-top:2px">${opt.desc}</div>
-        </div>
-        <div style="padding:14px 18px;background:#fff;">
-          <div style="font-size:22px;font-weight:700;color:#1a0a14">${fmt(opt.price)}</div>
-          <div style="font-size:10px;color:#b08898;margin-bottom:10px">${RATES[opt.rateKey].psf.toFixed(2)}/sqft × ${sqft.toLocaleString()} sqft${opt.isMin ? ' (min applies)' : ''}</div>
-          <table style="width:100%;border-collapse:collapse;font-size:11px;">
-            <tr><td style="padding:4px 0;color:#6b4058;border-bottom:1px solid #fce4ee">Annual Savings</td><td style="text-align:right;font-weight:700;color:#c0185a;border-bottom:1px solid #fce4ee">${fmt(opt.savings.low)}–${fmt(opt.savings.high)}/yr</td></tr>
-            <tr><td style="padding:4px 0;color:#6b4058;border-bottom:1px solid #fce4ee">HVAC Reduction</td><td style="text-align:right;font-weight:700;border-bottom:1px solid #fce4ee">${opt.savings.pct}</td></tr>
-            <tr><td style="padding:4px 0;color:#6b4058;border-bottom:1px solid #fce4ee">Utility Rebate</td><td style="text-align:right;font-weight:700;color:#c0185a;border-bottom:1px solid #fce4ee">−${fmt(utilRebate)}</td></tr>
-            <tr><td style="padding:4px 0;color:#6b4058;border-bottom:1px solid #fce4ee">Federal Credit</td><td style="text-align:right;font-weight:700;color:#c0185a;border-bottom:1px solid #fce4ee">−$1,200</td></tr>
-            <tr><td style="padding:4px 0;font-weight:700;color:#1a0a14;border-bottom:1px solid #fce4ee">Net After Incentives</td><td style="text-align:right;font-weight:700;font-size:13px;border-bottom:1px solid #fce4ee">${after <= 0 ? '<span style="color:#c0185a">Fully Offset</span>' : fmt(after)}</td></tr>
-            <tr><td style="padding:4px 0;color:#6b4058">Payback Period</td><td style="text-align:right;font-weight:700">${pb}</td></tr>
-          </table>
-        </div>
-      </div>`;
-  }).join('');
+    const rowH  = 26;
 
-  const optRows = opts.map(opt => {
-    const after = Math.max(0, opt.price - utilRebate - 1200);
-    return `<tr style="background:${opt.recommended ? '#fde8ef' : '#fff'}">
-      <td style="padding:10px 14px;border-bottom:1px solid #f0d8e4"><strong>${opt.name}</strong><div style="font-size:10px;color:#b08898">${opt.desc}</div></td>
-      <td style="padding:10px 14px;border-bottom:1px solid #f0d8e4;font-weight:700">${fmt(opt.price)}</td>
-      <td style="padding:10px 14px;border-bottom:1px solid #f0d8e4;color:#c0185a;font-weight:700">${fmt(opt.savings.low)}–${fmt(opt.savings.high)}/yr</td>
-      <td style="padding:10px 14px;border-bottom:1px solid #f0d8e4;font-weight:700">${after <= 0 ? '<span style="color:#c0185a">Fully Offset</span>' : fmt(after)}</td>
-      <td style="padding:10px 14px;border-bottom:1px solid #f0d8e4">${payback(opt.price, opt.savings.low, opt.savings.high)}</td>
-    </tr>`;
-  }).join('');
+    // Row background
+    if (opt.recommended) {
+      setFill(C.pinkLight);
+    } else {
+      setFill(ri % 2 === 0 ? C.white : [253, 250, 252]);
+    }
+    pdf.rect(ML, y, CW, rowH, 'F');
 
-  const el = document.createElement('div');
-  el.style.cssText = 'position:absolute;left:-9999px;top:0;width:900px;background:#fff;font-family:Arial,sans-serif;color:#1a0a14;';
-  el.innerHTML = `
-    <div style="background:#1a0a14;padding:28px 36px 24px;">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-        <div>
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
-            <div style="width:38px;height:38px;background:#f0407a;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:18px;">🐻‍❄️</div>
-            <div>
-              <div style="font-size:17px;font-weight:700;color:#fff">Polar Bear Insulation</div>
-              <div style="font-size:9px;color:rgba(255,255,255,0.4);letter-spacing:2px;text-transform:uppercase">Nebraska · Climate Zone 5</div>
-            </div>
-          </div>
-          <div style="font-size:9px;color:rgba(255,255,255,0.4);letter-spacing:2px;text-transform:uppercase;margin-bottom:4px">Estimate Prepared For</div>
-          <div style="font-size:22px;font-weight:700;color:#fff">${homeName}</div>
-          ${_lastAddress ? `<div style="font-size:13px;color:rgba(255,255,255,0.7);margin-top:5px;display:flex;align-items:center;gap:5px;"><span>📍</span> ${_lastAddress}</div>` : ''}
-          ${_lastPhone ? `<div style="font-size:12px;color:rgba(255,255,255,0.55);margin-top:3px">${_lastPhone}</div>` : ''}
-          ${_lastEmail ? `<div style="font-size:12px;color:rgba(255,255,255,0.55)">${_lastEmail}</div>` : ''}
-        </div>
-        <div style="text-align:right;font-size:11px;color:rgba(255,255,255,0.45);line-height:1.9;">
-          <div>Date: <strong style="color:#fff">${dateStr}</strong></div>
-          <div>Attic: <strong style="color:#fff">${sqft.toLocaleString()} sq ft</strong></div>
-          <div>Current: <strong style="color:#fff">${rLabel}</strong></div>
-          <div>Zone: <strong style="color:#fff">5 · Nebraska</strong></div>
-        </div>
-      </div>
-    </div>
-    <div style="height:4px;background:linear-gradient(90deg,#f0407a,#ff80aa,#f0407a)"></div>
-    <div style="padding:28px 36px;">
+    // Left pink accent for recommended
+    if (opt.recommended) {
+      setFill(C.pink);
+      pdf.rect(ML, y, 3, rowH, 'F');
+    }
 
-      <div style="font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#b08898;margin-bottom:14px;padding-bottom:6px;border-bottom:1px solid #f0d8e4">Your Upgrade Options</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:24px;">
-        ${optCards}
-      </div>
+    // Option name + desc
+    pdf.setFontSize(8.5);
+    pdf.setFont('helvetica', 'bold');
+    setTxt(C.textDark);
+    text(opt.name, ML + 8, y + 11);
+    pdf.setFontSize(6.5);
+    pdf.setFont('helvetica', 'normal');
+    setTxt(C.textMuted);
+    text(opt.desc, ML + 8, y + 20);
 
-      <div style="font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#b08898;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid #f0d8e4">Side-by-Side Comparison</div>
-      <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:22px;">
-        <thead><tr style="background:#1a0a14;color:#fff;">
-          <th style="padding:8px 14px;text-align:left;font-size:9px;letter-spacing:1.5px;text-transform:uppercase">Option</th>
-          <th style="padding:8px 14px;text-align:left;font-size:9px;letter-spacing:1.5px;text-transform:uppercase">Cost</th>
-          <th style="padding:8px 14px;text-align:left;font-size:9px;letter-spacing:1.5px;text-transform:uppercase">Annual Savings</th>
-          <th style="padding:8px 14px;text-align:left;font-size:9px;letter-spacing:1.5px;text-transform:uppercase">After Incentives</th>
-          <th style="padding:8px 14px;text-align:left;font-size:9px;letter-spacing:1.5px;text-transform:uppercase">Payback</th>
-        </tr></thead>
-        <tbody>${optRows}</tbody>
-      </table>
+    // Data cells
+    const cells = [
+      { val: fmt(opt.price),                                           x: ML + 175,    color: C.textDark, bold: true  },
+      { val: `${fmt(opt.savings.low)}–${fmt(opt.savings.high)}/yr`,   x: ML + 260,    color: C.pinkMid,  bold: true  },
+      { val: after <= 0 ? 'Fully Offset' : fmt(after),                x: ML + 375,    color: after <= 0 ? C.pinkMid : C.textDark, bold: true },
+      { val: pb,                                                       x: ML + CW - 8, color: C.textDark, bold: false },
+    ];
 
-      <div style="background:#fff0f5;border:1.5px solid #f9c0d4;border-radius:10px;padding:18px 22px;margin-bottom:22px;">
-        <div style="font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#f0407a;margin-bottom:10px">Available Incentives</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;font-size:11px;">
-          <div><div style="font-weight:700;font-size:15px;color:#1a0a14">${fmt(utilRebate)}</div><div style="color:#6b4058;margin-top:2px">Nebraska Utility Rebate</div></div>
-          <div><div style="font-weight:700;font-size:15px;color:#1a0a14">Up to $1,200</div><div style="color:#6b4058;margin-top:2px">Federal Tax Credit (IRA §25C)</div></div>
-          <div><div style="font-weight:700;font-size:15px;color:#1a0a14">${fmt(utilRebate + 1200)}</div><div style="color:#6b4058;margin-top:2px">Combined Maximum</div></div>
-        </div>
-      </div>
+    cells.forEach(cell => {
+      pdf.setFontSize(8);
+      pdf.setFont('helvetica', cell.bold ? 'bold' : 'normal');
+      setTxt(cell.color);
+      text(cell.val, cell.x, y + 14, { align: 'right' });
+    });
 
-      <div style="font-size:9px;color:#b08898;line-height:1.6;border-top:1px solid #f0d8e4;padding-top:12px">
-        Estimates based on Nebraska Department of Environment &amp; Energy commissioned energy research and EPA ENERGY STAR methodology. Annual savings reflect a Nebraska home in Climate Zone 5, scaled to your attic size. Actual savings vary. Incentive availability subject to program terms and IRS eligibility. Pricing subject to on-site verification. © Polar Bear Insulation.
-      </div>
-    </div>`;
-  return el;
+    // Row bottom rule
+    hline(ML, y + rowH, CW, C.rule, 0.3);
+    y += rowH;
+  });
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // INCENTIVES BLOCK
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  y = checkPage(y + 16, 90);
+  y = sectionLabel('Available Incentives', ML, y);
+  y += 6;
+
+  const incBoxH = 68;
+  setFill(C.blush);
+  pdf.rect(ML, y, CW, incBoxH, 'F');
+  setDraw(C.blushBdr);
+  pdf.setLineWidth(0.75);
+  pdf.rect(ML, y, CW, incBoxH, 'D');
+
+  const incItems = [
+    { label: 'Nebraska Utility Rebate',    val: fmt(utilRebate),         note: '$0.30/sq ft · max $600' },
+    { label: 'Federal Tax Credit (IRA §25C)', val: 'Up to $1,200',      note: 'Filed with annual tax return' },
+    { label: 'Combined Max Incentive',     val: fmt(utilRebate + 1200),  note: 'Stack both for full benefit' },
+  ];
+
+  const incColW = CW / 3;
+  incItems.forEach((inc, i) => {
+    const ix = ML + i * incColW + 14;
+    // Pink label
+    pdf.setFontSize(7);
+    pdf.setFont('helvetica', 'bold');
+    setTxt(C.pink);
+    text(inc.label.toUpperCase(), ix, y + 16);
+    // Big value
+    pdf.setFontSize(15);
+    pdf.setFont('helvetica', 'bold');
+    setTxt(C.textDark);
+    text(inc.val, ix, y + 34);
+    // Note
+    pdf.setFontSize(7.5);
+    pdf.setFont('helvetica', 'normal');
+    setTxt(C.textMid);
+    const noteLines = wrapText(inc.note, incColW - 20);
+    noteLines.forEach((line, li) => text(line, ix, y + 46 + li * 10));
+    // Vertical divider
+    if (i < 2) {
+      setDraw(C.blushBdr);
+      pdf.setLineWidth(0.5);
+      pdf.line(ML + (i + 1) * incColW, y + 8, ML + (i + 1) * incColW, y + incBoxH - 8);
+    }
+  });
+
+  y += incBoxH + 18;
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // WHY NEBRASKA — key facts strip
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  y = checkPage(y, 72);
+  y = sectionLabel('Why This Matters in Nebraska', ML, y);
+  y += 6;
+
+  const facts = [
+    { icon: '140°F', sub: 'Attic temps on hot summer days — your AC fights this all season.' },
+    { icon: 'R-60',  sub: 'Level identified by NE state research as highest economic potential.' },
+    { icon: '25%',   sub: 'Median air infiltration reduction from professional air sealing.' },
+  ];
+
+  const factW = (CW - 24) / 3;
+  facts.forEach((fact, i) => {
+    const fx = ML + i * (factW + 12);
+    setFill([252, 248, 251]);
+    pdf.rect(fx, y, factW, 50, 'F');
+    setFill(C.pink);
+    pdf.rect(fx, y, factW, 3, 'F');
+
+    pdf.setFontSize(16);
+    pdf.setFont('helvetica', 'bold');
+    setTxt(C.pinkMid);
+    text(fact.icon, fx + 10, y + 22);
+
+    const subLines = wrapText(fact.sub, factW - 16);
+    pdf.setFontSize(7);
+    pdf.setFont('helvetica', 'normal');
+    setTxt(C.textMid);
+    subLines.forEach((line, li) => text(line, fx + 10, y + 34 + li * 9));
+  });
+
+  y += 62;
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // DISCLAIMER + FOOTER
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  y = checkPage(y + 8, 60);
+
+  hline(ML, y, CW, C.rule);
+  y += 10;
+
+  const disclaimer = 'Estimates based on Nebraska Department of Environment & Energy commissioned energy research and EPA ENERGY STAR methodology. Annual savings reflect a Nebraska home in Climate Zone 5, scaled to your attic area. Actual results vary by home conditions, fuel type, thermostat settings, and utility rates. Incentive availability subject to utility program terms and IRS eligibility. All pricing subject to on-site verification.';
+  const disclaimerLines = wrapText(disclaimer, CW);
+  pdf.setFontSize(6.5);
+  pdf.setFont('helvetica', 'normal');
+  setTxt(C.textMuted);
+  disclaimerLines.forEach((line, li) => text(line, ML, y + li * 9));
+
+  y += disclaimerLines.length * 9 + 14;
+
+  // Footer bar — on every page
+  const pageCount = pdf.internal.getNumberOfPages();
+  for (let p = 1; p <= pageCount; p++) {
+    pdf.setPage(p);
+    setFill(C.navy);
+    pdf.rect(0, PH - 24, PW, 24, 'F');
+    setFill(C.pink);
+    pdf.rect(0, PH - 27, PW, 3, 'F');
+
+    pdf.setFontSize(7.5);
+    pdf.setFont('helvetica', 'bold');
+    setTxt(C.white);
+    text('🐻‍❄️  Polar Bear Insulation  ·  Nebraska  ·  Climate Zone 5', ML, PH - 10);
+
+    pdf.setFont('helvetica', 'normal');
+    setTxt([150, 120, 130]);
+    text(`Page ${p} of ${pageCount}`, PW - MR, PH - 10, { align: 'right' });
+  }
 }
+
 
 // ── EMAIL ESTIMATE ────────────────────────────────────────────
 
@@ -1496,17 +1873,6 @@ document.addEventListener('keydown', e => {
 
 <style>
 @keyframes spin { to { transform: rotate(360deg); } }
-
-/* PDF-only clean print area — hidden from screen */
-#pdf-capture {
-  position: absolute;
-  left: -9999px;
-  top: 0;
-  width: 900px;
-  background: #fff;
-  font-family: 'Plus Jakarta Sans', sans-serif;
-  color: #1a0a14;
-}
 </style>
 
 </body>
